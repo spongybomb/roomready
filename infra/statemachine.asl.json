@@ -1,0 +1,164 @@
+{
+  "Comment": "ROOMREADY preparation saga (Standard). Every Task invokes the shared step-handler Lambda; Parameters.step selects the handler in roomready/saga.py. Business outcomes are stored in DynamoDB.",
+  "StartAt": "BeginExecution",
+  "States": {
+    "BeginExecution": {
+      "Type": "Task",
+      "Resource": "${StepHandlerArn}",
+      "Parameters": {"step": "begin_execution", "state.$": "$"},
+      "Retry": [
+        {"ErrorEquals": ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException", "Lambda.TooManyRequestsException"], "IntervalSeconds": 2, "MaxAttempts": 3, "BackoffRate": 2.0}
+      ],
+      "Next": "RouteByMode"
+    },
+    "RouteByMode": {
+      "Type": "Choice",
+      "Choices": [
+        {"Variable": "$.outcome", "StringEquals": "FENCED", "Next": "Superseded"},
+        {"Variable": "$.mode", "StringEquals": "REVERSE", "Next": "BeginCompensation"}
+      ],
+      "Default": "ReserveSupplies"
+    },
+    "ReserveSupplies": {
+      "Type": "Task",
+      "Resource": "${StepHandlerArn}",
+      "Parameters": {"step": "reserve_supplies", "state.$": "$"},
+      "Retry": [
+        {"ErrorEquals": ["TransientError"], "IntervalSeconds": 2, "MaxAttempts": 3, "BackoffRate": 2.0},
+        {"ErrorEquals": ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException", "Lambda.TooManyRequestsException"], "IntervalSeconds": 2, "MaxAttempts": 3, "BackoffRate": 2.0}
+      ],
+      "Catch": [{"ErrorEquals": ["States.ALL"], "ResultPath": "$.error", "Next": "BeginCompensation"}],
+      "Next": "AfterReserveSupplies"
+    },
+    "AfterReserveSupplies": {
+      "Type": "Choice",
+      "Choices": [
+        {"Variable": "$.outcome", "StringEquals": "FENCED", "Next": "Superseded"},
+        {"Variable": "$.outcome", "StringEquals": "CANCEL_REQUESTED", "Next": "BeginCompensation"}
+      ],
+      "Default": "BookCourier"
+    },
+    "BookCourier": {
+      "Type": "Task",
+      "Resource": "${StepHandlerArn}",
+      "Parameters": {"step": "book_courier", "state.$": "$"},
+      "Retry": [
+        {"ErrorEquals": ["TransientError"], "IntervalSeconds": 2, "MaxAttempts": 3, "BackoffRate": 2.0},
+        {"ErrorEquals": ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException", "Lambda.TooManyRequestsException"], "IntervalSeconds": 2, "MaxAttempts": 3, "BackoffRate": 2.0}
+      ],
+      "Catch": [{"ErrorEquals": ["States.ALL"], "ResultPath": "$.error", "Next": "BeginCompensation"}],
+      "Next": "AfterBookCourier"
+    },
+    "AfterBookCourier": {
+      "Type": "Choice",
+      "Choices": [
+        {"Variable": "$.outcome", "StringEquals": "FENCED", "Next": "Superseded"},
+        {"Variable": "$.outcome", "StringEquals": "CANCEL_REQUESTED", "Next": "BeginCompensation"}
+      ],
+      "Default": "SetupRoom"
+    },
+    "SetupRoom": {
+      "Type": "Task",
+      "Resource": "${StepHandlerArn}",
+      "Parameters": {"step": "setup_room", "state.$": "$"},
+      "Retry": [
+        {"ErrorEquals": ["TransientError"], "IntervalSeconds": 2, "MaxAttempts": 3, "BackoffRate": 2.0},
+        {"ErrorEquals": ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException", "Lambda.TooManyRequestsException"], "IntervalSeconds": 2, "MaxAttempts": 3, "BackoffRate": 2.0}
+      ],
+      "Catch": [{"ErrorEquals": ["States.ALL"], "ResultPath": "$.error", "Next": "BeginCompensation"}],
+      "Next": "AfterSetupRoom"
+    },
+    "AfterSetupRoom": {
+      "Type": "Choice",
+      "Choices": [
+        {"Variable": "$.outcome", "StringEquals": "FENCED", "Next": "Superseded"},
+        {"Variable": "$.outcome", "StringEquals": "CANCEL_REQUESTED", "Next": "BeginCompensation"}
+      ],
+      "Default": "MarkReady"
+    },
+    "MarkReady": {
+      "Type": "Task",
+      "Resource": "${StepHandlerArn}",
+      "Parameters": {"step": "mark_ready", "state.$": "$"},
+      "Retry": [
+        {"ErrorEquals": ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException", "Lambda.TooManyRequestsException"], "IntervalSeconds": 2, "MaxAttempts": 3, "BackoffRate": 2.0}
+      ],
+      "Catch": [{"ErrorEquals": ["States.ALL"], "ResultPath": "$.error", "Next": "BeginCompensation"}],
+      "Next": "AfterMarkReady"
+    },
+    "AfterMarkReady": {
+      "Type": "Choice",
+      "Choices": [
+        {"Variable": "$.outcome", "StringEquals": "FENCED", "Next": "Superseded"},
+        {"Variable": "$.outcome", "StringEquals": "CANCEL_REQUESTED", "Next": "BeginCompensation"}
+      ],
+      "Default": "Ready"
+    },
+    "Ready": {"Type": "Succeed", "Comment": "Order is READY (stored in DynamoDB)."},
+    "BeginCompensation": {
+      "Type": "Task",
+      "Resource": "${StepHandlerArn}",
+      "Parameters": {"step": "begin_compensation", "state.$": "$"},
+      "Retry": [
+        {"ErrorEquals": ["TransientError", "Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException", "Lambda.TooManyRequestsException"], "IntervalSeconds": 2, "MaxAttempts": 3, "BackoffRate": 2.0}
+      ],
+      "Next": "AfterBeginCompensation"
+    },
+    "AfterBeginCompensation": {
+      "Type": "Choice",
+      "Choices": [{"Variable": "$.outcome", "StringEquals": "FENCED", "Next": "Superseded"}],
+      "Default": "CompensateSetupRoom"
+    },
+    "CompensateSetupRoom": {
+      "Type": "Task",
+      "Comment": "Reverse order: last forward step first.",
+      "Resource": "${StepHandlerArn}",
+      "Parameters": {"step": "compensate_setup_room", "state.$": "$"},
+      "Retry": [
+        {"ErrorEquals": ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException", "Lambda.TooManyRequestsException"], "IntervalSeconds": 2, "MaxAttempts": 3, "BackoffRate": 2.0}
+      ],
+      "Catch": [{"ErrorEquals": ["States.ALL"], "ResultPath": "$.compensationError", "Next": "CompensateBookCourier"}],
+      "Next": "CompensateBookCourier"
+    },
+    "CompensateBookCourier": {
+      "Type": "Task",
+      "Resource": "${StepHandlerArn}",
+      "Parameters": {"step": "compensate_book_courier", "state.$": "$"},
+      "Retry": [
+        {"ErrorEquals": ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException", "Lambda.TooManyRequestsException"], "IntervalSeconds": 2, "MaxAttempts": 3, "BackoffRate": 2.0}
+      ],
+      "Catch": [{"ErrorEquals": ["States.ALL"], "ResultPath": "$.compensationError", "Next": "CompensateReserveSupplies"}],
+      "Next": "CompensateReserveSupplies"
+    },
+    "CompensateReserveSupplies": {
+      "Type": "Task",
+      "Resource": "${StepHandlerArn}",
+      "Parameters": {"step": "compensate_reserve_supplies", "state.$": "$"},
+      "Retry": [
+        {"ErrorEquals": ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException", "Lambda.TooManyRequestsException"], "IntervalSeconds": 2, "MaxAttempts": 3, "BackoffRate": 2.0}
+      ],
+      "Catch": [{"ErrorEquals": ["States.ALL"], "ResultPath": "$.compensationError", "Next": "FinalizeCompensation"}],
+      "Next": "FinalizeCompensation"
+    },
+    "FinalizeCompensation": {
+      "Type": "Task",
+      "Resource": "${StepHandlerArn}",
+      "Parameters": {"step": "finalize_compensation", "state.$": "$"},
+      "Retry": [
+        {"ErrorEquals": ["TransientError", "Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException", "Lambda.TooManyRequestsException"], "IntervalSeconds": 2, "MaxAttempts": 3, "BackoffRate": 2.0}
+      ],
+      "Next": "AfterFinalize"
+    },
+    "AfterFinalize": {
+      "Type": "Choice",
+      "Choices": [
+        {"Variable": "$.outcome", "StringEquals": "FENCED", "Next": "Superseded"},
+        {"Variable": "$.finalStatus", "StringEquals": "MANUAL_REVIEW", "Next": "ManualReviewRequired"}
+      ],
+      "Default": "Compensated"
+    },
+    "Compensated": {"Type": "Succeed", "Comment": "CANCELLED or PREP_FAILED; every effect confirmed undone."},
+    "ManualReviewRequired": {"Type": "Fail", "Error": "ManualReviewRequired", "Cause": "At least one compensation could not be confirmed; order is MANUAL_REVIEW."},
+    "Superseded": {"Type": "Succeed", "Comment": "Stale or duplicate execution fenced by generation check; no side effects."}
+  }
+}

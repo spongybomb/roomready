@@ -1,0 +1,261 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  ROOMREADY (CDS538 Cloud Computing, Group 1) - five-service runtime baseline:
+  API Gateway HTTP API, EventBridge, Step Functions (Standard), Lambda, DynamoDB.
+  Uses the existing AWS Academy LabRole only (no IAM resources). All providers are simulated.
+  NOTE: the state machine Definition below is a placeholder; deploy the rendered copy
+  produced by scripts/render_template.py (scripts/deploy.ps1 does this for you).
+
+Parameters:
+  LabRoleArn:
+    Type: String
+    Description: ARN of the existing Learner Lab role, e.g. arn:aws:iam::<ACCOUNT_ID>:role/LabRole
+    AllowedPattern: "^arn:aws:iam::[0-9]{12}:role/.+$"
+  Stage:
+    Type: String
+    Default: dev
+    AllowedPattern: "^[a-z0-9-]{1,10}$"
+  AdminUsers:
+    Type: String
+    Default: ""
+    Description: Comma-separated caller ids (IAM user/role ARNs, or demo header names) allowed to use /admin routes.
+  DemoAllowHeaderIdentity:
+    Type: String
+    Default: "false"
+    AllowedValues: ["false", "true"]
+    Description: Demo only - accept the X-Demo-User header when no IAM identity is present.
+  RouteAuthorization:
+    Type: String
+    Default: AWS_IAM
+    AllowedValues: [AWS_IAM, NONE]
+    Description: AWS_IAM (SigV4-signed requests) is the baseline. NONE is for classroom demos with header identity only.
+
+Resources:
+  # ------------------------------------------------------------------ DynamoDB (single table)
+  Table:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub roomready-${Stage}
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - {AttributeName: PK, AttributeType: S}
+        - {AttributeName: SK, AttributeType: S}
+        - {AttributeName: GSI1PK, AttributeType: S}
+        - {AttributeName: GSI1SK, AttributeType: S}
+      KeySchema:
+        - {AttributeName: PK, KeyType: HASH}
+        - {AttributeName: SK, KeyType: RANGE}
+      GlobalSecondaryIndexes:
+        - IndexName: GSI1   # sparse: only due orders (GSI1PK=DUE) and unpublished outbox events (GSI1PK=OUTBOX)
+          KeySchema:
+            - {AttributeName: GSI1PK, KeyType: HASH}
+            - {AttributeName: GSI1SK, KeyType: RANGE}
+          Projection: {ProjectionType: ALL}
+
+  # ------------------------------------------------------------------ EventBridge
+  EventBus:
+    Type: AWS::Events::EventBus
+    Properties:
+      Name: !Sub roomready-${Stage}
+
+  # ------------------------------------------------------------------ Lambda (code uploaded by deploy.ps1)
+  ApiFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub roomready-${Stage}-api
+      Runtime: python3.12
+      Handler: roomready.aws_handlers.api_handler
+      Role: !Ref LabRoleArn
+      Timeout: 20
+      MemorySize: 256
+      Code:
+        ZipFile: |
+          def handler(event, context):
+              raise RuntimeError("ROOMREADY code not uploaded yet - run scripts/deploy.ps1")
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref Table
+          EVENT_BUS_NAME: !Ref EventBus
+          ADMIN_USERS: !Ref AdminUsers
+          DEMO_ALLOW_HEADER_IDENTITY: !Ref DemoAllowHeaderIdentity
+
+  PollerFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub roomready-${Stage}-poller
+      Runtime: python3.12
+      Handler: roomready.aws_handlers.poller_handler
+      Role: !Ref LabRoleArn
+      Timeout: 60
+      MemorySize: 256
+      Code:
+        ZipFile: |
+          def handler(event, context):
+              raise RuntimeError("ROOMREADY code not uploaded yet - run scripts/deploy.ps1")
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref Table
+          EVENT_BUS_NAME: !Ref EventBus
+
+  StepFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub roomready-${Stage}-step
+      Runtime: python3.12
+      Handler: roomready.aws_handlers.step_handler
+      Role: !Ref LabRoleArn
+      Timeout: 30
+      MemorySize: 256
+      Code:
+        ZipFile: |
+          def handler(event, context):
+              raise RuntimeError("ROOMREADY code not uploaded yet - run scripts/deploy.ps1")
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref Table
+
+  StarterFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub roomready-${Stage}-starter
+      Runtime: python3.12
+      Handler: roomready.aws_handlers.starter_handler
+      Role: !Ref LabRoleArn
+      Timeout: 20
+      MemorySize: 256
+      Code:
+        ZipFile: |
+          def handler(event, context):
+              raise RuntimeError("ROOMREADY code not uploaded yet - run scripts/deploy.ps1")
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref Table
+          STATE_MACHINE_ARN: !Ref StateMachine
+
+  # ------------------------------------------------------------------ Step Functions (Standard)
+  StateMachine:
+    Type: AWS::StepFunctions::StateMachine
+    Properties:
+      StateMachineName: !Sub roomready-${Stage}-saga
+      StateMachineType: STANDARD
+      RoleArn: !Ref LabRoleArn
+      Definition: __STATE_MACHINE_DEFINITION__
+      DefinitionSubstitutions:
+        StepHandlerArn: !GetAtt StepFunction.Arn
+
+  # ------------------------------------------------------------------ API Gateway HTTP API
+  HttpApi:
+    Type: AWS::ApiGatewayV2::Api
+    Properties:
+      Name: !Sub roomready-${Stage}
+      ProtocolType: HTTP
+
+  ApiIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref HttpApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !GetAtt ApiFunction.Arn
+      PayloadFormatVersion: "2.0"
+
+  RoutePostProfile:
+    Type: AWS::ApiGatewayV2::Route
+    Properties: {ApiId: !Ref HttpApi, RouteKey: "POST /profile", AuthorizationType: !Ref RouteAuthorization, Target: !Sub "integrations/${ApiIntegration}"}
+  RouteGetProfile:
+    Type: AWS::ApiGatewayV2::Route
+    Properties: {ApiId: !Ref HttpApi, RouteKey: "GET /profile", AuthorizationType: !Ref RouteAuthorization, Target: !Sub "integrations/${ApiIntegration}"}
+  RoutePostOrders:
+    Type: AWS::ApiGatewayV2::Route
+    Properties: {ApiId: !Ref HttpApi, RouteKey: "POST /orders", AuthorizationType: !Ref RouteAuthorization, Target: !Sub "integrations/${ApiIntegration}"}
+  RouteGetOrders:
+    Type: AWS::ApiGatewayV2::Route
+    Properties: {ApiId: !Ref HttpApi, RouteKey: "GET /orders", AuthorizationType: !Ref RouteAuthorization, Target: !Sub "integrations/${ApiIntegration}"}
+  RouteGetOrder:
+    Type: AWS::ApiGatewayV2::Route
+    Properties: {ApiId: !Ref HttpApi, RouteKey: "GET /orders/{id}", AuthorizationType: !Ref RouteAuthorization, Target: !Sub "integrations/${ApiIntegration}"}
+  RouteCancelOrder:
+    Type: AWS::ApiGatewayV2::Route
+    Properties: {ApiId: !Ref HttpApi, RouteKey: "POST /orders/{id}/cancel", AuthorizationType: !Ref RouteAuthorization, Target: !Sub "integrations/${ApiIntegration}"}
+  RouteAdminOrders:
+    Type: AWS::ApiGatewayV2::Route
+    Properties: {ApiId: !Ref HttpApi, RouteKey: "GET /admin/orders", AuthorizationType: !Ref RouteAuthorization, Target: !Sub "integrations/${ApiIntegration}"}
+  RouteAdminAudit:
+    Type: AWS::ApiGatewayV2::Route
+    Properties: {ApiId: !Ref HttpApi, RouteKey: "GET /admin/orders/{id}/audit", AuthorizationType: !Ref RouteAuthorization, Target: !Sub "integrations/${ApiIntegration}"}
+  RouteAdminProviders:
+    Type: AWS::ApiGatewayV2::Route
+    Properties: {ApiId: !Ref HttpApi, RouteKey: "GET /admin/providers", AuthorizationType: !Ref RouteAuthorization, Target: !Sub "integrations/${ApiIntegration}"}
+  RouteScenarios:
+    Type: AWS::ApiGatewayV2::Route
+    Properties: {ApiId: !Ref HttpApi, RouteKey: "GET /scenarios", AuthorizationType: !Ref RouteAuthorization, Target: !Sub "integrations/${ApiIntegration}"}
+
+  ApiStage:
+    Type: AWS::ApiGatewayV2::Stage
+    Properties:
+      ApiId: !Ref HttpApi
+      StageName: $default
+      AutoDeploy: true
+
+  ApiInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref ApiFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${HttpApi}/*
+
+  # ------------------------------------------------------------------ EventBridge rules
+  PollSchedule:
+    Type: AWS::Events::Rule
+    Properties:
+      Description: ROOMREADY scheduler - claim due orders and publish the outbox every minute
+      ScheduleExpression: rate(1 minute)
+      State: ENABLED
+      Targets:
+        - {Arn: !GetAtt PollerFunction.Arn, Id: poller}
+
+  PollerInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref PollerFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt PollSchedule.Arn
+
+  DomainEventRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Description: Route PreparationDue / CancellationRequested to the execution starter
+      EventBusName: !Ref EventBus
+      EventPattern:
+        source: [roomready.orders]
+        detail-type: [PreparationDue, CancellationRequested]
+      State: ENABLED
+      Targets:
+        - {Arn: !GetAtt StarterFunction.Arn, Id: starter}
+
+  StarterInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref StarterFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt DomainEventRule.Arn
+
+Outputs:
+  ApiEndpoint:
+    Value: !GetAtt HttpApi.ApiEndpoint
+  TableName:
+    Value: !Ref Table
+  EventBusName:
+    Value: !Ref EventBus
+  StateMachineArn:
+    Value: !Ref StateMachine
+  ApiFunctionName:
+    Value: !Ref ApiFunction
+  PollerFunctionName:
+    Value: !Ref PollerFunction
+  StepFunctionName:
+    Value: !Ref StepFunction
+  StarterFunctionName:
+    Value: !Ref StarterFunction
